@@ -45,14 +45,7 @@ npm run dist      # builds dist\Glance-Setup-<version>.exe
 
 ## Releasing
 
-Every push to `main` runs the tests and builds the installer on GitHub Actions (download it from the run's artifacts). To publish a release, bump `version` in `package.json`, then push a matching tag:
-
-```powershell
-git tag v1.2.0
-git push origin v1.2.0
-```
-
-The workflow attaches the installer to a GitHub Release for that tag.
+Every push to `main` runs the tests and builds the installer on GitHub Actions (download it from the run's artifacts). To publish a release, bump `version` in `package.json` and push to `main`. When that version has no release yet, the workflow creates the `v<version>` tag and a GitHub Release with the installer attached. Pushing a `v*` tag yourself works too.
 
 ## Files
 
