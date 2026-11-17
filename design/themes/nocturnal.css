@@ -1,0 +1,23 @@
+/* Nocturnal: from the Daily Briefing "Today (Nocturnal)" page */
+:root { --text:#EDEBE6; --text-2:#8C8F96; --text-3:#6B6E75; --blue:#EDEBE6; --orange:#FF3D7F; --orange-text:#FF3D7F; --purple:#FF3D7F; --purple-text:#FF6F9C; --green:#4CC38A; --green-text:#4CC38A; }
+.glass { background:#131417; border:1px solid #24262B; box-shadow:none; border-radius:22px; }
+.header h1 { font-family:'Inter Tight','Inter Display',sans-serif; font-weight:800; letter-spacing:-0.03em; font-size:19px; }
+.count { background:none; color:#FF3D7F; font-size:13px; font-weight:700; padding:0 2px; min-width:0; }
+.icon-btn, .icon-btn.plain { background:transparent; border:1px solid #2A2C32; color:#B9BBC0; }
+.icon-btn.ok { background:rgba(76,195,138,0.12); color:#4CC38A; border-color:transparent; }
+.row { background:transparent; border-radius:14px; border:1px solid transparent; box-shadow:none; }
+.widget.list .rows { gap:6px; }
+.row + .row { border-top-color:#24262B; border-radius:0 0 14px 14px; }
+.row.permission, .row.question { background:rgba(255,61,127,0.06); border:1px solid rgba(255,61,127,0.32); box-shadow:none; border-radius:14px; }
+.avatar.pet-tile, .avatar.pet-tile[class*="t-"] { background:#1B1C21; box-shadow:inset 0 0 0 1px #26282E; }
+.name { font-family:'Inter Tight','Inter Display',sans-serif; font-weight:700; letter-spacing:-0.02em; font-size:15.5px; }
+.status.orange, .status.purple { text-transform:uppercase; letter-spacing:0.12em; font-size:11px; font-weight:700; }
+.status .dot { width:6px; height:6px; }
+.bar { height:3px; background:#24262B; }
+.bar > i { background:#EDEBE6; }
+.fraction { color:#8C8F96; font-weight:500; }
+.request { background:#0E0F11; border:1px solid #24262B; border-radius:12px; }
+.eyebrow { color:#FF3D7F; letter-spacing:0.14em; font-size:11px; }
+.pill { background:#1B1C21; border:1px solid #2A2C32; border-radius:10px; color:#EDEBE6; }
+.pill.primary { background:#FF3D7F; background-image:none; color:#131417; box-shadow:none; font-weight:700; }
+.link { color:#8C8F96; }

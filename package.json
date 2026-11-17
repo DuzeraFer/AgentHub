@@ -1,0 +1,55 @@
+{
+  "name": "glance",
+  "productName": "Glance",
+  "version": "1.2.0",
+  "description": "A floating Liquid Glass widget that shows every Claude Code agent you have running, and lets you approve permissions and answer questions without switching apps.",
+  "main": "main.js",
+  "author": "Du",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder --win nsis --publish never",
+    "dist:mac": "electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "45.3.2",
+    "electron-builder": "26.18.1"
+  },
+  "build": {
+    "appId": "app.glance.widget",
+    "productName": "Glance",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**",
+      "renderer/**",
+      "assets/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Glance"
+    },
+    "mac": {
+      "icon": "assets/icon.png",
+      "category": "public.app-category.developer-tools"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "artifactName": "Glance-Setup-${version}.${ext}"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DuzeraFer/AgentHub.git"
+  }
+}
