@@ -7,8 +7,25 @@ const http = require('node:http');
 const DEFAULT_PORT = 47821;
 const HOLD_LIMIT_MS = 9.5 * 60 * 1000; // hooks are configured with a 600s timeout
 
-function startServer(store, { port = DEFAULT_PORT, host = '127.0.0.1' } = {}) {
+function startServer(store, { port = DEFAULT_PORT, host = '127.0.0.1', usage = null } = {}) {
   const server = http.createServer((req, res) => {
+    // Glance's status line command forwards Claude Code's status line JSON here.
+    if (req.method === 'POST' && /^\/usage\/?$/.test(req.url || '')) {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 1_000_000) req.destroy();
+      });
+      req.on('end', () => {
+        try {
+          if (usage) usage.ingestStatusLine(JSON.parse(body));
+        } catch {}
+        res.writeHead(204);
+        res.end();
+      });
+      return;
+    }
     const match = /^\/hook\/([A-Za-z]+)\/?$/.exec(req.url || '');
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' });

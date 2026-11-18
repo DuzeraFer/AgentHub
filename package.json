@@ -1,7 +1,7 @@
 {
   "name": "glance",
   "productName": "Glance",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "A floating Liquid Glass widget that shows every Claude Code agent you have running, and lets you approve permissions and answer questions without switching apps.",
   "main": "main.js",
   "author": "Du",

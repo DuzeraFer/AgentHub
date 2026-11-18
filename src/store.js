@@ -84,12 +84,40 @@ function isSubagent(payload) {
   return !!payload.agent_id || /[\\/]subagents[\\/]/i.test(String(payload.transcript_path || ''));
 }
 
+// The id of the subagent an event came from ('' for the main conversation).
+// Hooks spell it "agent-abc" or "abc"; the transcript is .../subagents/agent-abc.jsonl.
+function agentIdOf(payload) {
+  let id = payload.agent_id ? String(payload.agent_id) : '';
+  if (!id) {
+    const m = /[\\/]subagents[\\/](?:agent-)?([^\\/]+?)\.jsonl$/i.exec(String(payload.transcript_path || ''));
+    if (m) id = m[1];
+  }
+  return id.replace(/^agent-/, '');
+}
+
+// Background work Claude Code reports on Stop / SubagentStop that is still in flight.
+const FINISHED = new Set(['completed', 'complete', 'done', 'failed', 'killed', 'stopped', 'cancelled', 'canceled', 'error']);
+function inFlight(tasks) {
+  if (!Array.isArray(tasks)) return null;
+  return tasks
+    .filter((t) => t && typeof t === 'object' && !FINISHED.has(String(t.status || '').toLowerCase()))
+    .slice(0, 50)
+    .map((t) => ({
+      id: String(t.id || ''),
+      type: String(t.type || 'task'),
+      label: truncate(t.description || t.name || t.command || t.tool || t.agent_type || t.type || 'Background task', 80),
+      agentType: t.agent_type ? String(t.agent_type) : '',
+    }));
+}
+
 // Only plain terminal sessions can be answered from Glance. Claude desktop, project
 // and IDE sessions show their own prompt, which a held hook would block for minutes.
 const HOLDABLE = new Set(['cli', '']);
 
 const QUIET_MS = 15 * 60 * 1000; // no transcript writes for this long: stop showing "working"
 const GONE_MS = 3 * 60 * 60 * 1000; // ...and for this long: drop the session
+const CHILD_STALE_MS = 30 * 60 * 1000; // a subagent silent this long is treated as finished
+const CHILD_KEEP = 12; // finished subagents kept for the detail view
 
 class Store extends EventEmitter {
   // readEntrypoint(transcriptPath) -> 'cli' | 'claude-desktop' | ... | '' (unknown)
@@ -129,6 +157,9 @@ class Store extends EventEmitter {
         dismissed: false,
         transcript: '',
         entrypoint: '',
+        children: [], // subagents: { id, type, label, status, background, activity, startedAt, finishedAt }
+        tasks: [], // other background work from the last Stop: { id, type, label }
+        spawns: [], // Agent/Task tool calls waiting for their SubagentStart
       };
       this.sessions.set(id, s);
     }
@@ -167,7 +198,82 @@ class Store extends EventEmitter {
         if (!wa) return a.askedAt - b.askedAt;
         return a.startedAt - b.startedAt;
       })
-      .map(({ waitingAsk, ...s }) => ({ ...s, inApp: !HOLDABLE.has(s.entrypoint || ''), log: s.log.slice(-40) }));
+      .map(({ waitingAsk, spawns, lookups, ...s }) => ({
+        ...s,
+        inApp: !HOLDABLE.has(s.entrypoint || ''),
+        log: s.log.slice(-40),
+        children: s.children.map(({ transcript, ...c }) => c),
+        busy: this.busyCount(s),
+      }));
+  }
+
+  // How many subagents and background tasks of this session are still working.
+  busyCount(s) {
+    const running = s.children.filter((c) => c.status === 'running');
+    // Claude Code lists background subagents among its tasks too; count each one once.
+    const extraAgents = s.tasks.filter((t) => t.type === 'subagent').length - running.filter((c) => c.background).length;
+    return running.length + Math.max(0, extraAgents) + s.tasks.filter((t) => t.type !== 'subagent').length;
+  }
+
+  // Background work the UI lists that is not one of the known subagents.
+  otherTasks(s) {
+    const labels = new Set(s.children.filter((c) => c.status === 'running').map((c) => c.label));
+    return s.tasks.filter((t) => t.type !== 'subagent' || !labels.has(t.label));
+  }
+
+  childFor(s, payload, create = false) {
+    const id = agentIdOf(payload);
+    if (!id) return null;
+    let c = s.children.find((x) => x.id === id);
+    if (!c && create) {
+      const type = String(payload.agent_type || '');
+      // Match it to the Agent tool call that spawned it, to get its description.
+      let i = s.spawns.findIndex((p) => p.type && p.type === type);
+      if (i < 0) i = s.spawns.findIndex((p) => !p.type || !type);
+      const spawn = i >= 0 ? s.spawns.splice(i, 1)[0] : null;
+      c = {
+        id,
+        type: type || spawn?.type || 'Subagent',
+        label: spawn?.label || '',
+        background: !!spawn?.background,
+        status: 'running',
+        activity: 'Starting',
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        transcript: '',
+      };
+      s.children.push(c);
+    }
+    if (c && payload.agent_transcript_path) c.transcript = String(payload.agent_transcript_path);
+    else if (c && !c.transcript && /[\\/]subagents[\\/]/i.test(String(payload.transcript_path || ''))) c.transcript = String(payload.transcript_path);
+    return c;
+  }
+
+  finishChild(s, c, now = Date.now()) {
+    if (!c || c.status !== 'running') return;
+    c.status = 'done';
+    c.finishedAt = now;
+    c.activity = 'Finished';
+    const done = s.children.filter((x) => x.status !== 'running');
+    if (done.length > CHILD_KEEP) {
+      const drop = new Set(done.slice(0, done.length - CHILD_KEEP));
+      s.children = s.children.filter((x) => !drop.has(x));
+    }
+  }
+
+  // After the main reply ended: done only once nothing it started is still working.
+  settle(s) {
+    if (s.status !== 'background' && s.status !== 'done') return;
+    const busy = this.busyCount(s);
+    if (busy) {
+      s.status = 'background';
+      s.activity = `Reply done · ${busy} still working`;
+      delete s.finishedAt;
+    } else if (s.status === 'background') {
+      s.status = 'done';
+      s.activity = 'Finished. Ready for the next prompt';
+      s.finishedAt = Date.now();
+    }
   }
 
   pushLog(s, text, kind = 'tool') {
@@ -187,17 +293,23 @@ class Store extends EventEmitter {
     }
 
     const s = this.session(id, payload);
-    const sub = isSubagent(payload);
+    const sub = isSubagent(payload) && event !== 'SubagentStart' && event !== 'SubagentStop';
+    const agentKey = sub ? agentIdOf(payload) : '';
+    const child = sub ? this.childFor(s, payload, true) : null;
+    if (child) child.updatedAt = Date.now();
 
-    // A request answered in the Claude app: anything that happens next means it was handled.
-    if (event !== 'Notification' && event !== 'PermissionRequest') {
-      if (s.waitingAsk) {
+    // A request answered in the Claude app: anything that happens next in the same
+    // conversation (or subagent) means it was handled.
+    const sameAgent = (k) => (k || '') === agentKey;
+    if (event !== 'Notification' && event !== 'PermissionRequest' && event !== 'SubagentStart' && event !== 'SubagentStop') {
+      if (s.waitingAsk && sameAgent(s.waitingAsk.agentKey)) {
         clearTimeout(s.waitingAsk.timer);
         s.waitingAsk = null;
       }
-      if (s.request?.elsewhere) {
+      if (s.request?.elsewhere && sameAgent(s.request.agentKey)) {
         s.request = null;
-        s.status = 'running';
+        s.status = s.prevStatus === 'background' ? 'background' : 'running';
+        if (s.status === 'background') this.settle(s);
       }
     }
     if (s.quiet) s.quiet = false;
@@ -210,6 +322,7 @@ class Store extends EventEmitter {
 
       case 'UserPromptSubmit': {
         const prompt = truncate(payload.prompt, 80);
+        delete s.finishedAt;
         if (!s.title && prompt) s.title = truncate(payload.prompt, 34);
         s.status = 'running';
         s.activity = 'Thinking';
@@ -220,14 +333,26 @@ class Store extends EventEmitter {
       case 'PreToolUse': {
         const tool = payload.tool_name;
         const input = payload.tool_input || {};
+        const from = child ? child.label || child.type : '';
         if (tool === 'AskUserQuestion' && Array.isArray(input.questions) && input.questions.length) {
-          if (!this.canHold(s)) return this.notifyElsewhere(s, 'question', { tool, input });
-          return this.ask(s, 'question', { tool, input });
+          if (!this.canHold(s)) return this.notifyElsewhere(s, 'question', { tool, input, agentKey, from });
+          return this.ask(s, 'question', { tool, input, agentKey, from });
         }
+        if ((tool === 'Agent' || tool === 'Task') && input) {
+          s.spawns.push({ label: truncate(input.description, 60), type: String(input.subagent_type || ''), background: !!input.run_in_background, at: Date.now() });
+          if (s.spawns.length > 20) s.spawns.shift();
+        }
+        if (child) child.activity = describeTool(tool, input);
         if (s.status === 'permission' || s.status === 'question') break;
+        if (sub && (s.status === 'background' || s.status === 'done')) {
+          // The main reply ended but this subagent keeps going.
+          s.status = 'background';
+          this.settle(s);
+          break;
+        }
         s.status = 'running';
         s.activity = sub
-          ? `Subagent: ${describeTool(tool, input)}`
+          ? this.subActivity(s, describeTool(tool, input))
           : this.currentStepLabel(s) || describeTool(tool, input);
         if (tool === 'Bash' && input.command) s.lastCommand = input.command;
         this.pushLog(s, describeTool(tool, input));
@@ -245,8 +370,38 @@ class Store extends EventEmitter {
           }));
         }
         if (s.status === 'permission' || s.status === 'question') break;
+        if (sub && (s.status === 'background' || s.status === 'done')) break;
         s.status = 'running';
         s.activity = this.currentStepLabel(s) || s.activity;
+        break;
+      }
+
+      case 'SubagentStart': {
+        const c = this.childFor(s, payload, true);
+        if (c && c.status !== 'running') {
+          // A resumed subagent.
+          c.status = 'running';
+          c.startedAt = Date.now();
+          delete c.finishedAt;
+        }
+        if (c) c.updatedAt = Date.now();
+        if (s.status === 'done') {
+          s.status = 'background';
+          this.settle(s);
+        } else if (s.status === 'running' && !s.steps.some((t) => t.status === 'in_progress')) {
+          s.activity = this.subActivity(s, c ? `Started ${c.label || c.type}` : 'Started a subagent');
+        }
+        break;
+      }
+
+      case 'SubagentStop': {
+        // Claude Code also fires this for its own helpers (prompt suggestions, /btw)
+        // that never had a SubagentStart: those are simply not in the list.
+        const c = this.childFor(s, payload, false);
+        this.finishChild(s, c);
+        const tasks = inFlight(payload.background_tasks);
+        if (tasks) s.tasks = tasks;
+        this.settle(s);
         break;
       }
 
@@ -257,13 +412,17 @@ class Store extends EventEmitter {
         if (this.alwaysAllow.get(s.id)?.has(key)) {
           return permissionResponse('allow');
         }
-        if (!this.canHold(s)) return this.notifyElsewhere(s, 'permission', { tool, input });
-        return this.ask(s, 'permission', { tool, input, key });
+        const from = child ? child.label || child.type : '';
+        if (!this.canHold(s)) return this.notifyElsewhere(s, 'permission', { tool, input, agentKey, from });
+        return this.ask(s, 'permission', { tool, input, key, agentKey, from });
       }
 
       case 'Notification': {
         const msg = payload.message || '';
         if (s.status === 'permission' || s.status === 'question') break;
+        // The main reply is over and its subagents keep going: that is not "waiting on you".
+        if (s.status === 'background' && /waiting for your input/i.test(msg)) break;
+        if (payload.notification_type === 'idle_prompt' && s.status === 'background') break;
         if (/waiting for your input/i.test(msg) || payload.notification_type === 'idle_prompt') {
           s.status = 'waiting';
           s.activity = 'Waiting for your reply';
@@ -275,12 +434,19 @@ class Store extends EventEmitter {
         break;
       }
 
-      case 'Stop':
-        if (sub || s.status === 'permission' || s.status === 'question') break;
+      case 'Stop': {
+        if (sub) break;
+        const tasks = inFlight(payload.background_tasks);
+        if (tasks) s.tasks = tasks;
+        // Foreground subagents always end before their parent's reply does.
+        for (const c of s.children) if (c.status === 'running' && !c.background) this.finishChild(s, c);
+        if (s.status === 'permission' || s.status === 'question') break;
         s.status = 'done';
-        s.activity = 'Finished. Ready for the next prompt';
         s.finishedAt = Date.now();
+        this.settle(s);
+        if (s.status === 'done') s.activity = 'Finished. Ready for the next prompt';
         break;
+      }
 
       default:
         break;
@@ -301,7 +467,7 @@ class Store extends EventEmitter {
       this.showElsewhere(s, kind, details);
       return {};
     }
-    const waiting = { kind, details };
+    const waiting = { kind, details, agentKey: details.agentKey || '' };
     waiting.timer = setTimeout(() => {
       if (s.waitingAsk !== waiting || !this.sessions.has(s.id)) return;
       s.waitingAsk = null;
@@ -313,6 +479,7 @@ class Store extends EventEmitter {
   }
 
   showElsewhere(s, kind, details) {
+    if (s.status !== 'permission' && s.status !== 'question') s.prevStatus = s.status;
     s.status = kind;
     s.askedAt = Date.now();
     s.activity = kind === 'permission' ? `Wants to use ${details.tool}` : 'Has a question';
@@ -320,6 +487,8 @@ class Store extends EventEmitter {
       id: `e${++this.seq}`,
       kind,
       elsewhere: true,
+      agentKey: details.agentKey || '',
+      from: details.from || '',
       tool: details.tool,
       preview: kind === 'permission' ? requestPreview(details.tool, details.input) : '',
       description: details.input.description || '',
@@ -353,6 +522,28 @@ class Store extends EventEmitter {
         }
         if (typeof m === 'number') last = Math.max(last, m);
       }
+      // Subagents that went silent (killed with TaskStop, crashed) stop counting as busy.
+      for (const c of s.children) {
+        if (c.status !== 'running') continue;
+        let seen = c.updatedAt;
+        if (c.transcript) {
+          try {
+            const cm = this.statMtime(c.transcript);
+            if (typeof cm === 'number') seen = Math.max(seen, cm);
+          } catch {}
+        }
+        if (now - seen > CHILD_STALE_MS) {
+          this.finishChild(s, c, now);
+          c.activity = 'Stopped responding';
+          dirty = true;
+        }
+        last = Math.max(last, seen);
+      }
+      if (s.status === 'background') {
+        const before = s.status;
+        this.settle(s);
+        if (s.status !== before) dirty = true;
+      }
       const idle = now - last;
       if (idle > GONE_MS) {
         this.sessions.delete(s.id);
@@ -373,6 +564,12 @@ class Store extends EventEmitter {
     return false;
   }
 
+  // The parent's line while subagents work: one of them, or how many there are.
+  subActivity(s, latest) {
+    const running = s.children.filter((c) => c.status === 'running').length;
+    return running > 1 ? `${running} subagents working` : `Subagent: ${latest}`;
+  }
+
   currentStepLabel(s) {
     const active = s.steps.find((t) => t.status === 'in_progress');
     return active ? active.active : '';
@@ -388,7 +585,8 @@ class Store extends EventEmitter {
 
   ask(s, kind, details) {
     const requestId = `r${++this.seq}`;
-    const prevStatus = s.status === 'permission' || s.status === 'question' ? 'running' : s.status;
+    const prevStatus = s.status === 'permission' || s.status === 'question' ? s.prevStatus || 'running' : s.status;
+    s.prevStatus = prevStatus;
     s.status = kind;
     s.askedAt = Date.now();
     if (kind === 'permission') {
@@ -396,6 +594,7 @@ class Store extends EventEmitter {
       s.request = {
         id: requestId,
         kind,
+        from: details.from || '',
         tool: details.tool,
         preview: requestPreview(details.tool, details.input),
         description: details.input.description || '',
@@ -406,6 +605,7 @@ class Store extends EventEmitter {
       s.request = {
         id: requestId,
         kind,
+        from: details.from || '',
         questions: q.map((x) => ({
           question: x.question,
           header: x.header || '',
@@ -427,8 +627,13 @@ class Store extends EventEmitter {
           const cur = this.sessions.get(s.id);
           if (cur && cur.request && cur.request.id === requestId) {
             cur.request = null;
-            cur.status = prevStatus === 'done' || prevStatus === 'waiting' ? 'running' : prevStatus;
-            cur.activity = this.currentStepLabel(cur) || 'Working';
+            if (prevStatus === 'background' && details.agentKey) {
+              cur.status = 'background';
+              this.settle(cur);
+            } else {
+              cur.status = prevStatus === 'done' || prevStatus === 'waiting' || prevStatus === 'background' ? 'running' : prevStatus;
+              cur.activity = this.currentStepLabel(cur) || 'Working';
+            }
           }
           this.changed();
           resolve(response);

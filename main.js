@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const { Store } = require('./src/store');
 const { startServer, DEFAULT_PORT } = require('./src/server');
 const hooks = require('./src/hooks-config');
+const { Usage } = require('./src/usage');
 
 const PORT = Number(process.env.GLANCE_PORT) || DEFAULT_PORT;
 const PAD = 8; // thin transparent margin around the widget
@@ -49,7 +50,8 @@ let win = null;
 let tray = null;
 let collapsed = false;
 let quitting = false;
-let prefs = { sound: true, setupDone: false, notifications: true, width: 400, height: null };
+let prefs = { sound: true, setupDone: false, notifications: true, width: 400, height: null, usageFallback: true };
+const usage = new Usage();
 // Resizing scales the whole widget: text, pets, buttons and spacing all grow together.
 const BASE_W = 400;
 const zoom = () => prefs.width / BASE_W;
@@ -181,6 +183,16 @@ function buildTrayMenu() {
       },
     },
     {
+      label: 'Read usage with my Claude Code login',
+      type: 'checkbox',
+      checked: !!prefs.usageFallback,
+      click: (item) => {
+        prefs.usageFallback = item.checked;
+        savePrefs();
+        usage.setFallback(prefs.usageFallback);
+      },
+    },
+    {
       label: 'Reset widget size',
       click: () => {
         prefs.width = BASE_W;
@@ -203,7 +215,7 @@ function refreshTray() {
   const total = store.snapshot().length;
   const tip = n ? `Glance · ${n} agent${n > 1 ? 's' : ''} need you` : `Glance · ${total} agent${total === 1 ? '' : 's'}`;
   // Tool calls arrive many times a second; only touch the tray when something it shows changed.
-  const key = `${tip}|${hooks.isInstalled(PORT)}|${prefs.sound}|${prefs.notifications}|${app.getLoginItemSettings().openAtLogin}`;
+  const key = `${tip}|${hooks.isInstalled(PORT)}|${prefs.sound}|${prefs.notifications}|${prefs.usageFallback}|${app.getLoginItemSettings().openAtLogin}`;
   if (key === trayKey) return;
   trayKey = key;
   tray.setContextMenu(buildTrayMenu());
@@ -257,7 +269,8 @@ function jumpTo(sessionId) {
 }
 
 function wireIpc() {
-  ipcMain.handle('glance:init', () => ({ sessions: store.snapshot(), prefs: publicPrefs() }));
+  ipcMain.handle('glance:init', () => ({ sessions: store.snapshot(), prefs: publicPrefs(), usage: usage.snapshot() }));
+  ipcMain.on('glance:usage-refresh', () => usage.poll());
   ipcMain.on('glance:permission', (_e, { requestId, decision }) => store.respondPermission(requestId, decision));
   ipcMain.on('glance:answer', (_e, { requestId, answers }) => store.respondQuestion(requestId, answers));
   ipcMain.on('glance:dismiss', (_e, sessionId) => store.dismiss(sessionId));
@@ -375,7 +388,7 @@ app.whenReady().then(async () => {
   }
 
   try {
-    await startServer(store, { port: PORT });
+    await startServer(store, { port: PORT, usage });
   } catch (err) {
     new Notification({ title: 'Glance', body: `Port ${PORT} is busy. Is Glance already running?` }).show();
   }
@@ -387,6 +400,9 @@ app.whenReady().then(async () => {
   tray = new Tray(trayIcon.isEmpty() ? nativeImage.createFromPath(asset('icon.png')).resize({ width: 16 }) : trayIcon);
   tray.on('click', () => (win.isVisible() ? win.hide() : showWindow()));
   refreshTray();
+
+  usage.on('change', (u) => send('usage', u));
+  usage.setFallback(prefs.usageFallback);
 
   store.on('change', (sessions) => {
     send('sessions', sessions);
