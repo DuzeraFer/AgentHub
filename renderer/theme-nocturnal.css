@@ -88,3 +88,11 @@ button:focus-visible, input:focus-visible { outline-color: var(--pink); }
 .empty-state strong { font-family: var(--display); font-weight: 700; letter-spacing: -0.02em; font-size: 16px; }
 
 ::-webkit-scrollbar-thumb { background: #2A2C32; }
+
+/* Subagents, background work and usage */
+:root { --amber: #E8B04B; }
+.usage-btn.on { background: var(--raised); border-color: #3A3D45; }
+.usage-panel { background: var(--well); border: 1px solid var(--line); }
+.meter .m-top { font-family: var(--display); font-weight: 700; letter-spacing: -0.01em; }
+.meter .bar { height: 4px; background: var(--line); }
+.steps.work { margin-top: -4px; }

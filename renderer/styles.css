@@ -347,3 +347,36 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
 
 /* The corner handle is invisible; only the cursor shows it can be dragged */
 .grip, .grip:hover, .grip.dragging, .glass:hover .grip { opacity: 0; }
+
+/* Subagents and background work ----------------------------------------- */
+.status.background { color: var(--text); font-weight: 500; }
+.status.background .dot { background: var(--green); animation: pulse 1.6s infinite; }
+.kids { display: flex; flex-direction: column; gap: 4px; margin: -4px 0 0 52px; min-width: 0; }
+.kid { display: flex; align-items: center; gap: 7px; font-size: 12.5px; line-height: 17px; color: var(--text-2); min-width: 0; }
+.kid svg { width: 12px; height: 12px; flex-shrink: 0; }
+.kid .k-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.k-type { flex-shrink: 0; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.kid.more { padding-left: 19px; color: var(--text-3); }
+.section-title { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 12px 0; }
+.steps.work .k-type { min-width: 0; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps.work .step { gap: 10px; }
+
+/* Usage ring and panel --------------------------------------------------- */
+.usage-btn svg.ring { width: 20px; height: 20px; }
+.ring circle { fill: none; stroke-width: 3; }
+.ring .track { stroke: rgba(255,255,255,0.14); }
+.ring .fill { stroke-linecap: round; transition: stroke-dasharray 0.4s ease; }
+.ring.low .fill { stroke: var(--green); }
+.ring.mid .fill { stroke: var(--amber, #E8B04B); }
+.ring.high .fill { stroke: var(--pink, #FF3D7F); }
+.usage-panel { display: flex; flex-direction: column; gap: 12px; margin: 0 4px 2px; padding: 12px 14px; border-radius: 14px; }
+.u-empty { font-size: 13.5px; font-weight: 600; }
+.meter { display: flex; flex-direction: column; gap: 6px; }
+.meter .m-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; font-weight: 600; }
+.meter .m-pct { font-variant-numeric: tabular-nums; }
+.meter .bar { flex: none; height: 5px; }
+.meter.low .bar > i { background: var(--green); }
+.meter.mid .bar > i { background: var(--amber, #E8B04B); }
+.meter.high .bar > i { background: var(--pink, #FF3D7F); }
+.meter .m-sub, .u-foot { font-size: 12px; color: var(--text-2); }
+.u-foot { color: var(--text-3); }

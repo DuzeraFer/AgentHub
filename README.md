@@ -4,6 +4,8 @@ A small floating widget for Windows, in a dark "Nocturnal" glass style, that sho
 
 ![Glance widget: the session list, a session's steps, and the collapsed capsule](docs/screenshot.png)
 
+![Usage panel, subagents and background work](docs/usage-and-subagents.png)
+
 ## Download
 
 Get the latest installer from the [Releases page](https://github.com/DuzeraFer/AgentHub/releases/latest): download **Glance-Setup-x.y.z.exe** and run it. It installs for your user only (no admin rights), adds a Start Menu shortcut and starts Glance. Running a newer installer upgrades the existing install in place.
@@ -14,6 +16,8 @@ The installer is not code-signed, so Windows SmartScreen may say "Windows protec
 
 - Each session shows its project, what it is doing right now, and a step counter taken from Claude's to-do list. Every session gets its own pixel pet.
 - Click a session to see every step and the last command it ran.
+- Subagents and background work (background shells, background agents, workflows) show under their session. When the main reply ends while they keep going, the session reads **Reply done · N still working** and only turns **Done** once everything has finished.
+- The ring in the header is your plan usage. Click it to see the current 5-hour session and this week's usage, with reset times.
 - When an agent needs permission, choose **Allow**, **Always allow** or **Deny** in the widget.
 - When an agent asks a question, pick an option or type your own answer and press **Send**.
 - Sessions running in the Claude desktop app show an "Answer in Claude" card instead, so the app's own prompt is never hidden.
@@ -27,6 +31,12 @@ The installer is not code-signed, so Windows SmartScreen may say "Windows protec
 On first launch Glance adds hooks to `~/.claude/settings.json`. It first saves a backup next to that file as `settings.json.glance-backup`. Each hook is a single `curl` call to `http://127.0.0.1:47821`, so nothing leaves your machine. If Glance isn't running, the hook exits straight away and Claude Code works as normal.
 
 Permission prompts and questions wait for your answer in the widget for up to about 10 minutes. After that, or if you click **Answer in the terminal instead**, Claude Code shows its normal prompt.
+
+### Plan usage
+
+Claude Code passes your plan usage (`rate_limits`, Pro and Max plans) to its status line. Glance adds a status line command that forwards that JSON to Glance and prints nothing. If you already have a status line, Glance wraps it: yours still runs and prints the same, and the original is saved as `settings.json.glance-statusline` and put back when you disconnect. Usage appears after the first Claude Code reply in a session.
+
+Sessions that don't run a status line (possibly the Claude desktop app) can still fill the ring through **Read usage with my Claude Code login** in the tray menu. It calls the same endpoint as Claude Code's `/usage` screen with the login saved in `~/.claude/.credentials.json`, every 5 minutes, only when the status line has been quiet. That endpoint is not a documented API and can change. The token is only sent to `api.anthropic.com`, and expired logins are never refreshed. Glance never estimates usage from token counts: without data the ring stays empty.
 
 To disconnect, open the tray icon menu and untick **Connected to Claude Code**. That removes only Glance's hooks.
 
@@ -53,7 +63,8 @@ Every push to `main` runs the tests and builds the installer on GitHub Actions (
 - `preload.js`: the bridge between the window and the main process
 - `src/store.js`: session state built from hook events
 - `src/server.js`: the local hook endpoint
-- `src/hooks-config.js`: adds and removes hooks in Claude Code's settings without touching anything else
+- `src/hooks-config.js`: adds and removes hooks and the status line in Claude Code's settings without touching anything else
+- `src/usage.js`: plan usage from the status line, with the optional login fallback
 - `renderer/`: the widget UI, pixel pets and the Nocturnal theme (`theme-nocturnal.css`), with bundled Inter, Inter Tight and JetBrains Mono fonts
 - `design/`: alternative theme stylesheets and a Playwright script that renders the widget with any of them
 - `test/`: hook bridge and project tests

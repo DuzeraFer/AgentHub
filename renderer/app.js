@@ -20,6 +20,8 @@ const state = {
   sessions: [],
   prefs: { sound: true, connected: true, collapsed: false },
   view: 'list', // 'list' | session id (detail)
+  usage: null, // { fiveHour: { used, resetsAt }, sevenDay, source, updatedAt, fallback, note }
+  usageOpen: false,
   drafts: {}, // requestId -> { picks: [Set per question], text: [string per question] }
 };
 
@@ -57,6 +59,69 @@ function draftFor(req) {
   return state.drafts[req.id];
 }
 
+// ---------------------------------------------------------------- usage
+function usageLevel(p) {
+  return p >= 80 ? 'high' : p >= 50 ? 'mid' : 'low';
+}
+
+// A small radial ring filled to the 5-hour usage (empty with no data).
+function ring(size = 20) {
+  const u = state.usage;
+  const w = u?.fiveHour || u?.sevenDay;
+  const p = w ? Math.round(w.used) : null;
+  const r = size / 2 - 2.5;
+  const c = 2 * Math.PI * r;
+  const fill = p == null ? 0 : Math.max(p ? 0.03 : 0, p / 100);
+  const label = p == null ? 'Usage: no data yet' : `Session usage ${p}%`;
+  return `<svg class="ring ${p == null ? 'none' : usageLevel(p)}" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-label="${label}">
+    <circle class="track" cx="${size / 2}" cy="${size / 2}" r="${r}"/>
+    <circle class="fill" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-dasharray="${(fill * c).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 ${size / 2} ${size / 2})"/>
+  </svg>`;
+}
+
+function untilText(ms) {
+  if (!ms) return '';
+  const d = ms - Date.now();
+  if (d <= 0) return 'resetting now';
+  const m = Math.round(d / 60000);
+  if (m < 60) return `resets in ${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `resets in ${h}h ${m % 60}m`;
+  const when = new Date(ms);
+  return `resets ${when.toLocaleDateString(undefined, { weekday: 'short' })} ${when.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function agoText(ms) {
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)}h ago`;
+}
+
+function usageMeter(title, w) {
+  if (!w) return `<div class="meter"><div class="m-top"><span>${title}</span><span class="m-pct">–</span></div><div class="bar"><i style="width:0"></i></div><div class="m-sub">No data</div></div>`;
+  const p = Math.round(w.used);
+  return `<div class="meter ${usageLevel(p)}">
+    <div class="m-top"><span>${title}</span><span class="m-pct">${p}%</span></div>
+    <div class="bar"><i style="width:${p}%"></i></div>
+    <div class="m-sub">${w.reset ? 'Reset. Waiting for new data' : esc(untilText(w.resetsAt))}</div>
+  </div>`;
+}
+
+function usagePanel() {
+  if (!state.usageOpen) return '';
+  const u = state.usage;
+  const has = u && (u.fiveHour || u.sevenDay);
+  const src = u?.source === 'login' ? 'your Claude login' : 'Claude Code';
+  const foot = has
+    ? `Updated ${agoText(u.updatedAt)} · from ${src}`
+    : u?.note
+      ? esc(u.note)
+      : 'Shows up after your next Claude Code reply';
+  return `<div class="usage-panel">
+    ${has ? `${usageMeter('Current session', u.fiveHour)}${usageMeter('This week', u.sevenDay)}` : `<div class="u-empty">No usage data yet</div>`}
+    <div class="u-foot">${foot}</div>
+  </div>`;
+}
+
 // ---------------------------------------------------------------- sound
 let audio;
 function chime(kind) {
@@ -87,6 +152,7 @@ function header() {
   <div class="header">
     <div class="title"><h1>Agents</h1>${n ? `<span class="count">${n}</span>` : ''}</div>
     <div class="controls">
+      <button class="icon-btn usage-btn${state.usageOpen ? ' on' : ''}" data-act="usage" title="Plan usage">${ring()}</button>
       <button class="icon-btn" data-act="sound" title="${state.prefs.sound ? 'Mute sounds' : 'Turn sounds on'}">${state.prefs.sound ? ICONS.sound : ICONS.mute}</button>
       <button class="icon-btn" data-act="collapse" title="Collapse">${ICONS.up}</button>
       <button class="icon-btn" data-act="hide" title="Hide (Glance keeps running in the tray)">${ICONS.close}</button>
@@ -107,12 +173,15 @@ function statusLine(s) {
     }
     case 'waiting':
       return `<div class="status waiting"><span class="dot"></span>${esc(s.activity)}</div>`;
+    case 'background':
+      return `<div class="status background"><span class="dot"></span>Reply done · ${s.busy} still working</div>`;
     default:
       return `<div class="sub">${esc(s.activity)}</div>`;
   }
 }
 
 function progressBar(s) {
+  if (s.status === 'background') return `<div class="progress"><div class="bar indeterminate"><i></i></div></div>`;
   if (s.status !== 'running') return '';
   const p = progressOf(s);
   if (!p.total) return `<div class="progress"><div class="bar indeterminate"><i></i></div></div>`;
@@ -137,7 +206,7 @@ function elsewhereCard(s) {
   const r = s.request;
   const body =
     r.kind === 'permission'
-      ? `<div class="request-head"><span class="eyebrow">${r.tool === 'Bash' ? 'Run command' : 'Use tool'}</span><span class="meta">${esc(r.tool)}</span></div>
+      ? `<div class="request-head"><span class="eyebrow">${r.tool === 'Bash' ? 'Run command' : 'Use tool'}</span><span class="meta">${esc(r.tool)}${fromText(r)}</span></div>
     ${r.description ? `<div class="sub" style="white-space:normal">${esc(r.description)}</div>` : ''}
     <div class="code">${esc(r.preview)}</div>`
       : r.questions.map((q) => `<div class="q-text" style="font-size:15px;line-height:20px">${esc(q.question)}</div>`).join('');
@@ -148,11 +217,15 @@ function elsewhereCard(s) {
   </div>`;
 }
 
+function fromText(r) {
+  return r.from ? ` · from ${esc(r.from)}` : '';
+}
+
 function permissionCard(s) {
   const r = s.request;
   return `
   <div class="request">
-    <div class="request-head"><span class="eyebrow">${r.tool === 'Bash' ? 'Run command' : 'Use tool'}</span><span class="meta">${esc(r.tool)}</span></div>
+    <div class="request-head"><span class="eyebrow">${r.tool === 'Bash' ? 'Run command' : 'Use tool'}</span><span class="meta">${esc(r.tool)}${fromText(r)}</span></div>
     ${r.description ? `<div class="sub" style="white-space:normal">${esc(r.description)}</div>` : ''}
     <div class="code">${esc(r.preview)}</div>
   </div>
@@ -189,12 +262,49 @@ function questionCard(s) {
       </div>`;
     })
     .join('');
-  return `${qs}<button class="link" data-act="send-terminal" data-req="${esc(r.id)}">Answer in the terminal instead</button>`;
+  return `${r.from ? `<div class="meta">Asked by ${esc(r.from)}</div>` : ''}${qs}<button class="link" data-act="send-terminal" data-req="${esc(r.id)}">Answer in the terminal instead</button>`;
 }
 
 function ready(r) {
   const d = draftFor(r);
   return r.questions.every((_, i) => d.picks[i].size > 0 || d.text[i].trim());
+}
+
+// Running subagents and background tasks, so parallel work stays visible.
+function workItems(s) {
+  const items = (s.children || [])
+    .filter((c) => c.status === 'running')
+    .map((c) => ({ kind: agentKind(c.type), label: c.label, activity: c.activity, startedAt: c.startedAt, status: 'running' }));
+  const childLabels = new Set(items.map((i) => i.label));
+  for (const t of s.tasks || []) {
+    if (t.type === 'subagent' && childLabels.has(t.label)) continue;
+    items.push({ kind: taskKind(t), label: t.label, activity: '', status: 'running' });
+  }
+  return items;
+}
+
+// "general-purpose" is the default subagent: just call it an agent.
+function agentKind(type) {
+  return !type || type === 'general-purpose' ? 'Agent' : type;
+}
+
+function taskKind(t) {
+  if (t.type === 'subagent') return agentKind(t.agentType);
+  if (t.type === 'shell') return 'Shell';
+  return t.type ? t.type.charAt(0).toUpperCase() + t.type.slice(1) : 'Task';
+}
+
+function childLines(s) {
+  if (s.status === 'permission' || s.status === 'question') return '';
+  const items = workItems(s);
+  if (!items.length) return '';
+  const shown = items.slice(0, 3);
+  const more = items.length - shown.length;
+  return `<div class="kids">${shown
+    .map(
+      (k) => `<div class="kid">${ICONS.spinner}<span class="k-type">${esc(k.kind)}</span><span class="k-text">${esc(k.label || k.activity || 'Working')}${k.label && k.activity && k.activity !== 'Starting' ? ` · ${esc(k.activity)}` : ''}</span></div>`
+    )
+    .join('')}${more > 0 ? `<div class="kid more">+${more} more</div>` : ''}</div>`;
 }
 
 function row(s) {
@@ -210,6 +320,7 @@ function row(s) {
       </div>
       ${rowActions(s)}
     </div>
+    ${childLines(s)}
     ${s.request?.elsewhere ? elsewhereCard(s) : ''}
     ${s.status === 'permission' && s.request && !s.request.elsewhere ? permissionCard(s) : ''}
     ${s.status === 'question' && s.request && !s.request.elsewhere ? questionCard(s) : ''}
@@ -229,12 +340,12 @@ function emptyState() {
 // Older installs have hooks that can't tell Glance which Claude conversation they belong to.
 function updateBanner() {
   if (!state.prefs.connected || !state.prefs.outdated) return '';
-  return `<div class="banner"><span>Update the connection so the open button goes straight to each chat.</span>
+  return `<div class="banner"><span>Update the connection to see subagents, background work and your usage.</span>
     <button class="pill primary" data-act="connect">Update</button></div>`;
 }
 
 function listView() {
-  return `<div class="glass widget list">${header()}${updateBanner()}<div class="rows">${state.sessions.length ? state.sessions.map(row).join('') : emptyState()}</div></div>`;
+  return `<div class="glass widget list">${header()}${usagePanel()}${updateBanner()}<div class="rows">${state.sessions.length ? state.sessions.map(row).join('') : emptyState()}</div></div>`;
 }
 
 function detailView(s) {
@@ -270,9 +381,10 @@ function detailView(s) {
     ${s.status === 'permission' || s.status === 'question' ? row(s) : `
     <div class="detail-progress">
       <div class="top"><span>${esc(current ? current.active : s.activity)}</span><span>${p.total ? `${p.done} of ${p.total}` : ''}</span></div>
-      <div class="bar${p.total || s.status !== 'running' ? '' : ' indeterminate'}"><i style="width:${p.total ? p.pct : s.status === 'done' ? 100 : 35}%"></i></div>
+      <div class="bar${(p.total || s.status !== 'running') && s.status !== 'background' ? '' : ' indeterminate'}"><i style="width:${p.total ? p.pct : s.status === 'done' ? 100 : 35}%"></i></div>
     </div>`}
     <div class="steps">${steps}</div>
+    ${workSection(s)}
     ${s.lastCommand ? `
     <div class="terminal">
       <div class="t-head">${ICONS.terminal}<span class="eyebrow" style="color:inherit">Last command</span></div>
@@ -281,10 +393,26 @@ function detailView(s) {
   </div>`;
 }
 
+function workSection(s) {
+  const running = workItems(s);
+  const done = (s.children || []).filter((c) => c.status !== 'running').slice(-6).reverse();
+  if (!running.length && !done.length) return '';
+  const line = (icon, cls, kind, text, tag) =>
+    `<div class="step ${cls}">${icon}<span class="k-type">${esc(kind)}</span><span class="s-text">${esc(text)}</span><span class="s-tag">${tag}</span></div>`;
+  const rows = [
+    ...running.map((k) =>
+      line(ICONS.spinner, 'in_progress', k.kind, k.label ? `${k.label}${k.activity && k.activity !== 'Starting' ? ` · ${k.activity}` : ''}` : k.activity || 'Working', k.startedAt ? elapsed(k.startedAt) : 'Running')
+    ),
+    ...done.map((c) => line(c.activity === 'Stopped responding' ? ICONS.pending : ICONS.done, 'completed', agentKind(c.type), c.label || agentKind(c.type), c.finishedAt ? elapsed(c.startedAt, c.finishedAt) : '')),
+  ];
+  return `<div class="section-title"><span class="eyebrow">Subagents and background</span><span class="meta">${running.length ? `${running.length} working` : 'All finished'}</span></div>
+    <div class="steps work">${rows.join('')}</div>`;
+}
+
 function collapsedView() {
   const n = state.sessions.length;
   const attn = state.sessions.filter((s) => s.status === 'permission' || s.status === 'question').length;
-  const running = state.sessions.filter((s) => s.status === 'running').length;
+  const running = state.sessions.filter((s) => s.status === 'running' || s.status === 'background').length;
   const minis = state.sessions.slice(0, 4).map((s) => `<div class="mini t-${esc(PETS.traits(s.id, s.color).color)}">${PETS.petSvg(s, 24)}</div>`).join('');
   return `
   <div class="glass capsule">
@@ -293,6 +421,7 @@ function collapsedView() {
       <div class="name">${n ? `${n} agent${n > 1 ? 's' : ''}${running ? ' working' : ''}` : 'No agents'}</div>
       ${attn ? `<div class="attn">${attn} need${attn > 1 ? '' : 's'} you</div>` : `<div class="calm">${running ? 'All good' : 'Idle'}</div>`}
     </div>
+    <button class="icon-btn usage-btn" data-act="usage-expand" title="Plan usage">${ring()}</button>
     <button class="icon-btn" data-act="expand" title="Expand">${ICONS.down}</button>
   </div>`;
 }
@@ -436,6 +565,18 @@ root.addEventListener('click', (e) => {
     case 'hide':
       api.hide();
       break;
+    case 'usage':
+      state.usageOpen = !state.usageOpen;
+      if (state.usageOpen) api.refreshUsage?.();
+      render();
+      break;
+    case 'usage-expand':
+      state.prefs.collapsed = false;
+      state.usageOpen = true;
+      api.collapse(false);
+      api.refreshUsage?.();
+      render();
+      break;
     case 'connect':
       api.connect();
       break;
@@ -502,6 +643,11 @@ root.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.dataset?.input) {
     root.querySelector(`[data-act="send"][data-req="${CSS.escape(e.target.dataset.input)}"]`)?.click();
   }
+  if (e.key === 'Escape' && state.usageOpen) {
+    state.usageOpen = false;
+    render();
+    return;
+  }
   if (e.key === 'Escape' && state.view !== 'list') {
     state.view = 'list';
     render();
@@ -550,13 +696,19 @@ api.onAttention(({ id }) => {
 });
 
 setInterval(() => {
-  if (state.sessions.some((s) => s.status === 'done') || state.view !== 'list') {
+  if (state.sessions.some((s) => s.status === 'done' || s.status === 'background') || state.view !== 'list' || state.usageOpen) {
     if (!document.activeElement?.dataset?.input) render();
   }
 }, 15000);
 
-api.init().then(({ sessions, prefs }) => {
+api.onUsage?.((u) => {
+  state.usage = u;
+  render();
+});
+
+api.init().then(({ sessions, prefs, usage }) => {
   state.sessions = sessions;
+  state.usage = usage || null;
   state.prefs = { ...state.prefs, ...prefs };
   previous = new Map(sessions.map((s) => [s.id, s.status]));
   render();

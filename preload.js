@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('glance', {
   init: () => ipcRenderer.invoke('glance:init'),
   onSessions: (fn) => ipcRenderer.on('sessions', (_e, data) => fn(data)),
   onPrefs: (fn) => ipcRenderer.on('prefs', (_e, data) => fn(data)),
+  onUsage: (fn) => ipcRenderer.on('usage', (_e, data) => fn(data)),
+  refreshUsage: () => ipcRenderer.send('glance:usage-refresh'),
   onAttention: (fn) => ipcRenderer.on('attention', (_e, data) => fn(data)),
   permission: (requestId, decision) => ipcRenderer.send('glance:permission', { requestId, decision }),
   answer: (requestId, answers) => ipcRenderer.send('glance:answer', { requestId, answers }),
